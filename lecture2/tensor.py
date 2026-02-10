@@ -1,4 +1,5 @@
 import  torch
+from einops import repeat, rearrange, einsum
 
 num_gpus = torch.cuda.device_count()  # @inspect num_gpus
 for i in range(num_gpus):
@@ -22,12 +23,12 @@ for i in range(num_gpus):
 
 # 内存共享与拷贝
 def same_storge(x:torch.Tensor, y:torch.Tensor, x_name:str, y_name:str):
-    is_same_storage = x.untyped_storage() .data_ptr() == y.untyped_storage() .data_ptr()
+    is_same_storage = x.untyped_storage().data_ptr() == y.untyped_storage().data_ptr()
     print(f"Are {x_name} and {y_name} saved together:", is_same_storage)
     return is_same_storage
 
 
-# y = x.view(4,3,2)
+# y = x.view(4,3,2) 
 # same_storge(x, y, "x", "y")
 # print("y", y)
 # print("shape of y", y.shape)
@@ -73,7 +74,7 @@ def same_storge(x:torch.Tensor, y:torch.Tensor, x_name:str, y_name:str):
 # print("x's shape:", x.shape)
 # print("x is contiuous: ", x.is_contiguous())
 # print("flattern x:", x.view(-1))
-# print("x's stride", x.stride())
+# print("x's stride", x.stride()) 
 
 # k = x.view(2,3,2,4)
 # print("k:", k)
@@ -137,52 +138,90 @@ def same_storge(x:torch.Tensor, y:torch.Tensor, x_name:str, y_name:str):
 # print(x_t_contiguous.view(2,2,2,3))
 
 
-# =============== 查看unsqueeze/squeeze/expand/repeat对张量的处理过程
-print("x:")
-x = torch.randn(size=[2,3,4])
-print(x.shape)
-print(x.stride())
-print(x.view(-1))
+# # =============== 查看unsqueeze/squeeze/expand/repeat对张量的处理过程
+# print("x:")
+# x = torch.randn(size=[2,3,4])
+# print(x.shape)
+# print(x.stride())
+# print(x.view(-1))
 
+# print("="*50)
+# print("unsqueezed_x:")
+# unsqueezed_x = x.unsqueeze(1)
+# print("shape:", unsqueezed_x.shape)
+# same_storge(x, unsqueezed_x, "x", "unsqueezed_x")
+# print(unsqueezed_x.stride())
+# print(unsqueezed_x.is_contiguous())
+# print(unsqueezed_x)
+
+# print("="*50)
+# print("expanded_x:")
+# expanded_x = unsqueezed_x.expand(size=[2,2,3,4]) # 这里可以尝试切换成expanded_x = x.expand(size=[2,2,3,4])对比一下效果看看
+# same_storge(x, expanded_x, "x", "expanded_x")
+# print(expanded_x.stride())
+# print(expanded_x.is_contiguous())
+# print(expanded_x)
+# # 直接在x上expand 1 2  以后会变成 1 2 1 2
+# # 先unsqueeze再expand就会变成 1 1 2 2
+# # 另外 expand 操作会导致行索引在张量的存储对象上不连续,但还是在原来的存储对象上做处理
+
+
+# print("="*50)
+# print("repeat_x:")
+# repeat_x = unsqueezed_x.repeat(1,2,1,1) 
+# same_storge(x, repeat_x, "x", "repeat_x")
+# print(repeat_x.shape)
+# print(repeat_x.stride())
+# print(repeat_x.is_contiguous())
+# print(repeat_x)
+# print(torch.equal(repeat_x, expanded_x))
+# # unsqueeze在做expand或repeat拿到的矩阵几乎是一样的
+# # 除了expand和repeat在函数输入上不一样以外，repeat操作会新建一个存储的张量，但是expand会在原来的对象上做视图的变更，且expand是不连续的，但是repeat是连续的
+
+# print("="*50)
+# print("squeezed_x:")
+# squeezed_x = repeat_x.view(4,3,4)
+# same_storge(squeezed_x, repeat_x, "x", "squeezed_x")
+# print(squeezed_x.shape)
+# print(squeezed_x.stride())
+# print(squeezed_x.is_contiguous())
+# print(squeezed_x)
+
+# # ========================================== 对比flatten和view(-1)的区别========================
+# x = torch.randn(size=[2,3,4])
+# y = x.view(-1)
+# z = x.flatten()
+
+# same_storge(x,y,"x","y")
+# same_storge(x,z,"x","z")
+# print(torch.equal(y,z)) # 结论：矩阵一样的，且都创建的是视图而不是一个新的张量。
+# torch.index_select()
+
+
+# =========================================== 对比张量先广播后transpose 与直接expand好对应维度之间的区别
+inv_freq =  torch.tensor([1 / (10000 ** (2 * k / 10)) for k in range(10 // 2 )])
+token_positions = torch.arange(6).unsqueeze(0)
+print(inv_freq)
+print(token_positions)
 print("="*50)
-print("unsqueezed_x:")
-unsqueezed_x = x.unsqueeze(1)
-print("shape:", unsqueezed_x.shape)
-same_storge(x, unsqueezed_x, "x", "unsqueezed_x")
-print(unsqueezed_x.stride())
-print(unsqueezed_x.is_contiguous())
-print(unsqueezed_x)
 
+inv_freq_expanded = repeat(inv_freq.float(), "half_dk -> bs half_dk 1", bs=token_positions.shape[0]) # 重复频率,每个seq一份inv_freq
+position_ids_expanded = rearrange(token_positions.float(), "bs seq_len -> bs 1 seq_len") # 给position_ids拓展维度，方便做广播
+print(inv_freq_expanded)
+print(position_ids_expanded)
+freqs = einsum(inv_freq_expanded, position_ids_expanded,
+        "bs half_dk x, bs x seq_len -> bs half_dk seq_len"
+    ).transpose(1,2)
+print(freqs)
 print("="*50)
-print("expanded_x:")
-expanded_x = unsqueezed_x.expand(size=[2,2,3,4]) # 这里可以尝试切换成expanded_x = x.expand(size=[2,2,3,4])对比一下效果看看
-same_storge(x, expanded_x, "x", "expanded_x")
-print(expanded_x.stride())
-print(expanded_x.is_contiguous())
-print(expanded_x)
-# 直接在x上expand 1 2  以后会变成 1 2 1 2
-# 先unsqueeze再expand就会变成 1 1 2 2
-# 另外 expand 操作会导致行索引在张量的存储对象上不连续,但还是在原来的存储对象上做处理
 
-
+inv_freq_expanded_v1 = repeat(inv_freq.float(), "half_dk -> bs 1 half_dk", bs=token_positions.shape[0]) # 重复频率,每个seq一份inv_freq
+position_ids_expanded_v1 = rearrange(token_positions.float(), "bs seq_len -> bs seq_len 1") # 给position_ids拓展维度，方便做广播
+print(inv_freq_expanded_v1)
+print(position_ids_expanded_v1)
+freqs_v1 = einsum(position_ids_expanded_v1, inv_freq_expanded_v1,
+        "bs seq_len x, bs x half_dk -> bs seq_len half_dk"
+    )
+print(freqs_v1)
 print("="*50)
-print("repeat_x:")
-repeat_x = unsqueezed_x.repeat(1,2,1,1)
-same_storge(x, repeat_x, "x", "repeat_x")
-print(repeat_x.shape)
-print(repeat_x.stride())
-print(repeat_x.is_contiguous())
-print(repeat_x)
-print(torch.equal(repeat_x, expanded_x))
-# unsqueeze在做expand或repeat拿到的矩阵几乎是一样的
-# 除了expand和repeat在函数输入上不一样以外，repeat操作会新建一个存储的张量，但是expand会在原来的对象上做视图的变更，且expand是不连续的，但是repeat是连续的
-
-print("="*50)
-print("squeezed_x:")
-squeezed_x = repeat_x.view(4,3,4)
-same_storge(squeezed_x, repeat_x, "x", "squeezed_x")
-print(squeezed_x.shape)
-print(squeezed_x.stride())
-print(squeezed_x.is_contiguous())
-print(squeezed_x)
-
+print("is equal:", freqs.equal(freqs_v1))
